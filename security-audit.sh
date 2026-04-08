@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Next.js Security Audit Script
+# Web Security Audit Script
 # =============================================================================
-# Automated security checks for Next.js projects.
+# Automated security checks for any web project (Next.js, React, Vue, Nuxt,
+# SvelteKit, Express, Fastify, Astro, Remix, Angular, and more).
+#
 # Based on Burak Eregar's 9 security principles for AI-assisted development.
 #
 # Usage: ./security-audit.sh [--ci] [--fix]
@@ -43,37 +45,86 @@ pass()   { echo -e "  ${GREEN}PASS${NC} $1"; }
 fail()   { echo -e "  ${RED}FAIL${NC} $1"; ERRORS=$((ERRORS + 1)); }
 warn()   { echo -e "  ${YELLOW}WARN${NC} $1"; WARNINGS=$((WARNINGS + 1)); }
 
-# Detect source directory
-SRC_DIR="src"
-if [ ! -d "$SRC_DIR" ]; then
-  SRC_DIR="app"
-  if [ ! -d "$SRC_DIR" ]; then
-    echo -e "${RED}Error: No src/ or app/ directory found.${NC}"
-    exit 1
+# -----------------------------------------------------------------------------
+# Detect source directory (src/, app/, lib/, pages/, or current dir)
+# -----------------------------------------------------------------------------
+SRC_DIR=""
+for dir in src app lib pages; do
+  if [ -d "$dir" ]; then
+    SRC_DIR="$dir"
+    break
   fi
+done
+if [ -z "$SRC_DIR" ]; then
+  SRC_DIR="."
 fi
 
-echo -e "${BLUE}Next.js Security Audit${NC}"
+# Detect framework
+FRAMEWORK="unknown"
+if [ -f "next.config.js" ] || [ -f "next.config.ts" ] || [ -f "next.config.mjs" ]; then
+  FRAMEWORK="next"
+elif [ -f "nuxt.config.ts" ] || [ -f "nuxt.config.js" ]; then
+  FRAMEWORK="nuxt"
+elif [ -f "svelte.config.js" ] || [ -f "svelte.config.ts" ]; then
+  FRAMEWORK="sveltekit"
+elif [ -f "astro.config.mjs" ] || [ -f "astro.config.ts" ]; then
+  FRAMEWORK="astro"
+elif [ -f "angular.json" ]; then
+  FRAMEWORK="angular"
+elif [ -f "vue.config.js" ] || [ -f "vite.config.ts" ] || [ -f "vite.config.js" ]; then
+  FRAMEWORK="vite"
+fi
+
+# Detect package manager
+PKG_MANAGER="npm"
+if [ -f "pnpm-lock.yaml" ]; then
+  PKG_MANAGER="pnpm"
+elif [ -f "yarn.lock" ]; then
+  PKG_MANAGER="yarn"
+elif [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
+  PKG_MANAGER="bun"
+fi
+
+echo -e "${BLUE}Web Security Audit${NC}"
 echo "Source directory: $SRC_DIR"
+echo "Framework: $FRAMEWORK | Package manager: $PKG_MANAGER"
 echo "Mode: $([ "$CI_MODE" = true ] && echo 'CI' || echo 'local')$([ "$FIX_MODE" = true ] && echo ' + auto-fix' || echo '')"
 
+# File extensions to scan
+FILE_EXTS="--include=*.ts --include=*.tsx --include=*.js --include=*.jsx --include=*.vue --include=*.svelte --include=*.astro"
+
 # =============================================================================
-# 1. Database imports in client components
+# 1. Database imports in client/browser code
 # =============================================================================
 header "Principle 1: No database access in client code"
 
-CLIENT_DB_IMPORTS=$(grep -rn '"use client"' --include="*.ts" --include="*.tsx" -l "$SRC_DIR" 2>/dev/null | while read -r file; do
-  if grep -qE "from ['\"](@prisma|prisma|@supabase/supabase-js|drizzle-orm|mongoose|typeorm|knex|sequelize)" "$file" 2>/dev/null; then
+DB_PATTERN="from ['\"](@prisma|prisma|@supabase/supabase-js|drizzle-orm|mongoose|typeorm|knex|sequelize|@planetscale|better-sqlite3|pg |mysql2)"
+
+# Check React/Next.js "use client" files
+CLIENT_DB_IMPORTS=$(grep -rn '"use client"' --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" -l "$SRC_DIR" 2>/dev/null | while read -r file; do
+  if grep -qE "$DB_PATTERN" "$file" 2>/dev/null; then
     echo "$file"
   fi
 done || true)
 
-if [ -z "$CLIENT_DB_IMPORTS" ]; then
-  pass "No database imports found in 'use client' files"
+# Check Vue <script> with no server-only marker
+VUE_DB_IMPORTS=$(grep -rlE "$DB_PATTERN" --include="*.vue" "$SRC_DIR" 2>/dev/null | while read -r file; do
+  if ! grep -qE "(server|defineServerComponent|<script.*server)" "$file" 2>/dev/null; then
+    echo "$file"
+  fi
+done || true)
+
+# Check Svelte non-server files
+SVELTE_DB_IMPORTS=$(grep -rlE "$DB_PATTERN" --include="*.svelte" "$SRC_DIR" 2>/dev/null || true)
+
+ALL_CLIENT_DB="$CLIENT_DB_IMPORTS$VUE_DB_IMPORTS$SVELTE_DB_IMPORTS"
+
+if [ -z "$ALL_CLIENT_DB" ]; then
+  pass "No database imports found in client/browser files"
 else
   fail "Database imports found in client files:"
-  echo "$CLIENT_DB_IMPORTS" | while read -r file; do
-    echo "    - $file"
+  echo "$ALL_CLIENT_DB" | while read -r file; do
+    [ -n "$file" ] && echo "    - $file"
   done
 fi
 
@@ -82,16 +133,25 @@ fi
 # =============================================================================
 header "Principle 2: Authentication on API endpoints"
 
-API_ROUTES=$(find "$SRC_DIR" -path "*/api/*" -name "route.ts" -o -name "route.js" 2>/dev/null || true)
+AUTH_PATTERNS="(getServerSession|getSession|auth\(|getToken|verifyToken|authenticate|requireAuth|withAuth|getUser|currentUser|clerkClient|getAuth|passport\.|jwt\.verify|lucia|authMiddleware|protect\(|requireLogin|isAuthenticated|ensureAuth)"
 
-if [ -n "$API_ROUTES" ]; then
+# Next.js / Remix route handlers
+API_ROUTES=$(find "$SRC_DIR" -path "*/api/*" \( -name "route.ts" -o -name "route.js" -o -name "*.server.ts" -o -name "*.server.js" \) 2>/dev/null || true)
+
+# Express / Fastify style routes
+EXPRESS_ROUTES=$(grep -rlE "\.(get|post|put|patch|delete)\(" --include="*.ts" --include="*.js" "$SRC_DIR" 2>/dev/null | grep -iE "(route|controller|handler|endpoint|api)" || true)
+
+ALL_ROUTES=$(echo -e "$API_ROUTES\n$EXPRESS_ROUTES" | sort -u | grep -v "^$" || true)
+
+if [ -n "$ALL_ROUTES" ]; then
   UNPROTECTED=0
   while IFS= read -r route; do
-    if ! grep -qE "(getServerSession|getSession|auth\(|getToken|verifyToken|authenticate|requireAuth|withAuth|getUser|currentUser|clerkClient|getAuth)" "$route" 2>/dev/null; then
+    [ -z "$route" ] && continue
+    if ! grep -qE "$AUTH_PATTERNS" "$route" 2>/dev/null; then
       warn "No auth check detected: $route"
       UNPROTECTED=$((UNPROTECTED + 1))
     fi
-  done <<< "$API_ROUTES"
+  done <<< "$ALL_ROUTES"
   if [ "$UNPROTECTED" -eq 0 ]; then
     pass "All API routes appear to have authentication checks"
   fi
@@ -104,9 +164,12 @@ fi
 # =============================================================================
 header "Principle 3: Premium features verified server-side"
 
+PREMIUM_PATTERN="(isPremium|isSubscribed|isPro|planType|subscription|tier|billingStatus)"
+
+# React/Next.js "use client" files
 PREMIUM_CLIENT=$(grep -rn '"use client"' --include="*.ts" --include="*.tsx" -l "$SRC_DIR" 2>/dev/null | while read -r file; do
-  if grep -qE "(isPremium|isSubscribed|isPro|planType|subscription)" "$file" 2>/dev/null; then
-    if ! grep -qE "(fetch|api/|server|action)" "$file" 2>/dev/null; then
+  if grep -qE "$PREMIUM_PATTERN" "$file" 2>/dev/null; then
+    if ! grep -qE "(fetch|api/|server|action|trpc|query|useSWR|useQuery)" "$file" 2>/dev/null; then
       echo "$file"
     fi
   fi
@@ -124,14 +187,22 @@ fi
 # =============================================================================
 # 4. Secrets in client-side environment variables
 # =============================================================================
-header "Principle 4: No secrets in NEXT_PUBLIC_* variables"
+header "Principle 4: No secrets in client-exposed env variables"
 
-EXPOSED_SECRETS=$(grep -rnE "NEXT_PUBLIC_.*(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE)" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.env*" . 2>/dev/null | grep -vE "(node_modules|\.next|dist|build)" || true)
+# Framework-specific public env prefixes:
+# - Next.js: NEXT_PUBLIC_
+# - Vite/SvelteKit/Astro: VITE_
+# - Nuxt: NUXT_PUBLIC_ (or runtime config)
+# - Angular: (uses environment.ts files)
+# - Create React App: REACT_APP_
+PUBLIC_ENV_PATTERN="(NEXT_PUBLIC_|VITE_|NUXT_PUBLIC_|REACT_APP_|EXPO_PUBLIC_).*(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE)"
+
+EXPOSED_SECRETS=$(grep -rnE "$PUBLIC_ENV_PATTERN" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.vue" --include="*.svelte" --include="*.env*" . 2>/dev/null | grep -vE "(node_modules|\.next|\.nuxt|\.svelte-kit|dist|build|\.output)" || true)
 
 if [ -z "$EXPOSED_SECRETS" ]; then
-  pass "No secrets detected in NEXT_PUBLIC_* variables"
+  pass "No secrets detected in client-exposed env variables"
 else
-  fail "Potential secrets exposed via NEXT_PUBLIC_*:"
+  fail "Potential secrets exposed via public env variables:"
   echo "$EXPOSED_SECRETS" | head -20 | while read -r line; do
     echo "    $line"
   done
@@ -142,18 +213,26 @@ fi
 # =============================================================================
 header "Principle 5: Sensitive calculations are server-side"
 
+CALC_PATTERN="(calculatePrice|calculateScore|computeDiscount|finalPrice|totalAmount|calculateTotal|computePrice|billingAmount|chargeAmount)"
+
+# React "use client" files
 PRICE_CLIENT=$(grep -rn '"use client"' --include="*.ts" --include="*.tsx" -l "$SRC_DIR" 2>/dev/null | while read -r file; do
-  if grep -qE "(calculatePrice|calculateScore|computeDiscount|finalPrice|totalAmount)" "$file" 2>/dev/null; then
+  if grep -qE "$CALC_PATTERN" "$file" 2>/dev/null; then
     echo "$file"
   fi
 done || true)
 
-if [ -z "$PRICE_CLIENT" ]; then
+# Vue/Svelte client components
+PRICE_SFC=$(grep -rlE "$CALC_PATTERN" --include="*.vue" --include="*.svelte" "$SRC_DIR" 2>/dev/null || true)
+
+ALL_PRICE="$PRICE_CLIENT$PRICE_SFC"
+
+if [ -z "$ALL_PRICE" ]; then
   pass "No price/score calculations in client components"
 else
   warn "Sensitive calculations found in client files (should be server-side):"
-  echo "$PRICE_CLIENT" | while read -r file; do
-    echo "    - $file"
+  echo "$ALL_PRICE" | while read -r file; do
+    [ -n "$file" ] && echo "    - $file"
   done
 fi
 
@@ -162,17 +241,22 @@ fi
 # =============================================================================
 header "Principle 6: Input sanitization"
 
-if [ -n "$API_ROUTES" ]; then
+VALIDATION_PATTERN="(zod|yup|joi|validate|sanitize|ajv|superstruct|valibot|z\.object|z\.string|class-validator|express-validator|typebox)"
+
+if [ -n "$ALL_ROUTES" ]; then
   UNVALIDATED=0
   while IFS= read -r route; do
-    if ! grep -qE "(zod|yup|joi|validate|sanitize|ajv|superstruct|valibot|z\.object|z\.string)" "$route" 2>/dev/null; then
+    [ -z "$route" ] && continue
+    if ! grep -qE "$VALIDATION_PATTERN" "$route" 2>/dev/null; then
       warn "No input validation library detected: $route"
       UNVALIDATED=$((UNVALIDATED + 1))
     fi
-  done <<< "$API_ROUTES"
+  done <<< "$ALL_ROUTES"
   if [ "$UNVALIDATED" -eq 0 ]; then
     pass "All API routes appear to use input validation"
   fi
+else
+    pass "No API routes to check"
 fi
 
 # =============================================================================
@@ -180,16 +264,19 @@ fi
 # =============================================================================
 header "Principle 7: Rate limiting on expensive endpoints"
 
-EXPENSIVE_PATTERNS="(openai|anthropic|stripe|sendgrid|resend|twilio|aws-sdk|generate|ai\/)"
+EXPENSIVE_PATTERNS="(openai|anthropic|stripe|sendgrid|resend|twilio|aws-sdk|@google-ai|@azure|generate|ai\/|langchain|cohere|replicate|huggingface)"
+RATE_LIMIT_PATTERNS="(rateLimit|rateLimiter|upstash|@upstash\/ratelimit|limiter|throttle|express-rate-limit|bottleneck|p-limit|p-throttle)"
+
 EXPENSIVE_ROUTES=""
-if [ -n "$API_ROUTES" ]; then
+if [ -n "$ALL_ROUTES" ]; then
   while IFS= read -r route; do
+    [ -z "$route" ] && continue
     if grep -qE "$EXPENSIVE_PATTERNS" "$route" 2>/dev/null; then
-      if ! grep -qE "(rateLimit|rateLimiter|upstash|@upstash\/ratelimit|limiter|throttle)" "$route" 2>/dev/null; then
+      if ! grep -qE "$RATE_LIMIT_PATTERNS" "$route" 2>/dev/null; then
         EXPENSIVE_ROUTES="$EXPENSIVE_ROUTES$route"$'\n'
       fi
     fi
-  done <<< "$API_ROUTES"
+  done <<< "$ALL_ROUTES"
 fi
 
 if [ -z "$EXPENSIVE_ROUTES" ]; then
@@ -206,13 +293,18 @@ fi
 # =============================================================================
 header "Principle 8: No sensitive data in logs"
 
-SENSITIVE_LOGS=$(grep -rnE "console\.(log|info|debug|warn)\(.*\b(password|token|secret|apiKey|api_key|credential|authorization|bearer)\b" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" "$SRC_DIR" 2>/dev/null || true)
+SENSITIVE_LOGS=$(grep -rnE "console\.(log|info|debug|warn)\(.*\b(password|token|secret|apiKey|api_key|credential|authorization|bearer|private_key|session_id)\b" $FILE_EXTS "$SRC_DIR" 2>/dev/null || true)
 
-if [ -z "$SENSITIVE_LOGS" ]; then
-  pass "No sensitive data found in console logs"
+# Also check for common logging libraries
+LOGGER_LEAKS=$(grep -rnE "(logger|log)\.(info|debug|warn|error)\(.*\b(password|token|secret|apiKey|api_key|credential|bearer)\b" $FILE_EXTS "$SRC_DIR" 2>/dev/null || true)
+
+ALL_LOG_ISSUES="$SENSITIVE_LOGS$LOGGER_LEAKS"
+
+if [ -z "$ALL_LOG_ISSUES" ]; then
+  pass "No sensitive data found in logs"
 else
   fail "Potential sensitive data in logs:"
-  echo "$SENSITIVE_LOGS" | head -20 | while read -r line; do
+  echo "$ALL_LOG_ISSUES" | sort -u | head -20 | while read -r line; do
     echo "    $line"
   done
 fi
@@ -220,13 +312,20 @@ fi
 # =============================================================================
 # 9. Dependency audit
 # =============================================================================
-header "Dependency Audit (npm audit)"
+header "Dependency Audit"
 
 if [ "$FIX_MODE" = true ]; then
-  npm audit fix --force 2>/dev/null || true
+  $PKG_MANAGER audit fix --force 2>/dev/null || npm audit fix --force 2>/dev/null || true
 fi
 
-AUDIT_OUTPUT=$(npm audit --json 2>/dev/null || true)
+if [ "$PKG_MANAGER" = "pnpm" ]; then
+  AUDIT_OUTPUT=$(pnpm audit --json 2>/dev/null || true)
+elif [ "$PKG_MANAGER" = "yarn" ]; then
+  AUDIT_OUTPUT=$(yarn audit --json 2>/dev/null || true)
+else
+  AUDIT_OUTPUT=$(npm audit --json 2>/dev/null || true)
+fi
+
 VULNS=$(echo "$AUDIT_OUTPUT" | grep -o '"total":[0-9]*' | head -1 | cut -d: -f2 || echo "0")
 
 if [ "${VULNS:-0}" -eq 0 ]; then
@@ -238,7 +337,7 @@ else
   else
     warn "$VULNS vulnerabilities found (low/moderate)"
   fi
-  echo "    Run 'npm audit' for details"
+  echo "    Run '$PKG_MANAGER audit' for details"
 fi
 
 # =============================================================================
@@ -246,7 +345,7 @@ fi
 # =============================================================================
 header "TypeScript Type Check"
 
-if command -v npx &>/dev/null && [ -f "tsconfig.json" ]; then
+if [ -f "tsconfig.json" ]; then
   if npx tsc --noEmit 2>/dev/null; then
     pass "TypeScript compilation successful"
   else
@@ -254,26 +353,23 @@ if command -v npx &>/dev/null && [ -f "tsconfig.json" ]; then
     echo "    Run 'npx tsc --noEmit' for details"
   fi
 else
-  warn "TypeScript not configured, skipping"
+  pass "No tsconfig.json found, skipping (not a TypeScript project)"
 fi
 
 # =============================================================================
 # 11. ESLint security rules
 # =============================================================================
-header "ESLint Security Check"
+header "ESLint Check"
 
-if command -v npx &>/dev/null; then
-  if [ "$FIX_MODE" = true ]; then
-    npx eslint "$SRC_DIR" --fix 2>/dev/null || true
-  fi
-  if npx eslint "$SRC_DIR" 2>/dev/null; then
-    pass "No ESLint errors"
-  else
-    warn "ESLint reported issues"
-    echo "    Run 'npx eslint $SRC_DIR' for details"
-  fi
+ESLINT_TARGET="$SRC_DIR"
+if [ "$FIX_MODE" = true ]; then
+  npx eslint "$ESLINT_TARGET" --fix 2>/dev/null || true
+fi
+if npx eslint "$ESLINT_TARGET" 2>/dev/null; then
+  pass "No ESLint errors"
 else
-  warn "ESLint not available, skipping"
+  warn "ESLint reported issues"
+  echo "    Run 'npx eslint $ESLINT_TARGET' for details"
 fi
 
 # =============================================================================
@@ -281,26 +377,37 @@ fi
 # =============================================================================
 header "Secret Scanning"
 
-# Common secret patterns (regex)
 SECRET_PATTERNS=(
   'sk-[a-zA-Z0-9]{20,}'           # OpenAI keys
   'sk_live_[a-zA-Z0-9]{20,}'      # Stripe live keys
+  'sk_test_[a-zA-Z0-9]{20,}'      # Stripe test keys
+  'pk_live_[a-zA-Z0-9]{20,}'      # Stripe publishable live keys
   'ghp_[a-zA-Z0-9]{36}'           # GitHub PAT
   'github_pat_[a-zA-Z0-9_]{40,}'  # GitHub fine-grained PAT
+  'gho_[a-zA-Z0-9]{36}'           # GitHub OAuth token
   'glpat-[a-zA-Z0-9\-]{20,}'      # GitLab PAT
   'AKIA[A-Z0-9]{16}'              # AWS access keys
   'xoxb-[0-9]{10,}'               # Slack bot tokens
   'xoxp-[0-9]{10,}'               # Slack user tokens
   'SG\.[a-zA-Z0-9_-]{22}\.'       # SendGrid keys
   'key-[a-zA-Z0-9]{32,}'          # Generic API keys
+  'AIza[a-zA-Z0-9_-]{35}'         # Google API keys
+  'ya29\.[a-zA-Z0-9_-]{50,}'      # Google OAuth tokens
+  'eyJ[a-zA-Z0-9_-]{20,}\.eyJ'    # JWT tokens (hardcoded)
+  'mongodb\+srv://[^:]+:[^@]+@'   # MongoDB connection strings with credentials
+  'postgres://[^:]+:[^@]+@'       # PostgreSQL connection strings with credentials
+  'mysql://[^:]+:[^@]+@'          # MySQL connection strings with credentials
+  'redis://[^:]+:[^@]+@'          # Redis connection strings with credentials
 )
 
 SECRETS_FOUND=false
+SCAN_DIR="$SRC_DIR"
+
 for pattern in "${SECRET_PATTERNS[@]}"; do
-  MATCHES=$(grep -rnE "$pattern" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.env" "$SRC_DIR" 2>/dev/null | grep -v "node_modules" || true)
+  MATCHES=$(grep -rnE "$pattern" $FILE_EXTS --include="*.env" --include="*.json" --include="*.yaml" --include="*.yml" "$SCAN_DIR" 2>/dev/null | grep -vE "(node_modules|\.next|\.nuxt|dist|build|\.output|\.svelte-kit|\.lock|package-lock)" || true)
   if [ -n "$MATCHES" ]; then
     SECRETS_FOUND=true
-    fail "Potential hardcoded secret found (pattern: $pattern):"
+    fail "Potential hardcoded secret found:"
     echo "$MATCHES" | head -5 | while read -r line; do
       echo "    $line"
     done
@@ -318,6 +425,54 @@ if [ -f ".gitignore" ]; then
   else
     fail ".env files are NOT in .gitignore"
   fi
+fi
+
+# =============================================================================
+# 13. CORS misconfiguration
+# =============================================================================
+header "CORS Configuration"
+
+CORS_WILDCARD=$(grep -rnE "(Access-Control-Allow-Origin.*\*|cors\(\)|origin:\s*true|origin:\s*\*)" $FILE_EXTS "$SRC_DIR" 2>/dev/null | grep -vE "(node_modules|test|spec|__test)" || true)
+
+if [ -z "$CORS_WILDCARD" ]; then
+  pass "No wildcard CORS detected"
+else
+  warn "Wildcard or permissive CORS found (review if intentional):"
+  echo "$CORS_WILDCARD" | head -10 | while read -r line; do
+    echo "    $line"
+  done
+fi
+
+# =============================================================================
+# 14. SQL injection risk (raw queries)
+# =============================================================================
+header "SQL Injection Risk"
+
+RAW_SQL=$(grep -rnE "(\.raw\(|\.rawQuery\(|\$\{.*\}.*SELECT|query\(.*\+.*\)|execute\(.*\+)" $FILE_EXTS "$SRC_DIR" 2>/dev/null | grep -vE "(node_modules|test|spec|__test|migration)" || true)
+
+if [ -z "$RAW_SQL" ]; then
+  pass "No raw SQL with potential injection detected"
+else
+  warn "Potential SQL injection (raw queries with string interpolation):"
+  echo "$RAW_SQL" | head -10 | while read -r line; do
+    echo "    $line"
+  done
+fi
+
+# =============================================================================
+# 15. Unsafe innerHTML / XSS vectors
+# =============================================================================
+header "XSS Risk"
+
+XSS_PATTERNS=$(grep -rnE "(dangerouslySetInnerHTML|innerHTML\s*=|v-html=|\{@html|\.html\()" $FILE_EXTS "$SRC_DIR" 2>/dev/null | grep -vE "(node_modules|test|spec|__test)" || true)
+
+if [ -z "$XSS_PATTERNS" ]; then
+  pass "No unsafe innerHTML usage detected"
+else
+  warn "Potential XSS vectors (innerHTML/dangerouslySetInnerHTML):"
+  echo "$XSS_PATTERNS" | head -10 | while read -r line; do
+    echo "    $line"
+  done
 fi
 
 # =============================================================================

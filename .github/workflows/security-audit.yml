@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   security-audit:
-    name: Next.js Security Audit
+    name: Web Security Audit
     runs-on: ubuntu-latest
 
     steps:
