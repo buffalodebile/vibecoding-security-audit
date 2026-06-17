@@ -1,10 +1,12 @@
-# Web Security Audit
+# Vibecoding Web Security Audit
 
-Automated security checks for any web project. One script, 15 checks, zero config.
+Automated security checks for any **vibecoded** web project. One script, 15 checks, zero config.
+
+When you build fast with an AI assistant — "vibecoding" — it's easy to ship code that works but quietly leaks secrets, skips auth, or trusts the client. This tool is the safety net: it catches the security mistakes that AI-generated code most often makes, so you can keep moving fast without shipping holes.
 
 Works with Next.js, React, Vue, Nuxt, SvelteKit, Astro, Remix, Angular, Express, Fastify, and more.
 
-Based on [Burak Eregar's 9 security principles](https://x.com/burakeregar) for AI-assisted development.
+Based on [Burak Eregar's 9 security principles](https://x.com/burakeregar) for AI-assisted (vibecoding) development.
 
 ## What it checks
 
@@ -40,7 +42,7 @@ The script automatically detects:
 
 ```bash
 # Download the script into your project
-curl -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/web-security-audit/main/security-audit.sh
+curl -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-websecurity-audit/main/security-audit.sh
 chmod +x security-audit.sh
 
 # Run it
@@ -50,9 +52,9 @@ chmod +x security-audit.sh
 ### Option 2: Clone and copy
 
 ```bash
-git clone https://github.com/buffalodebile/web-security-audit.git
-cp web-security-audit/security-audit.sh your-project/
-cp -r web-security-audit/.github your-project/
+git clone https://github.com/buffalodebile/vibecoding-websecurity-audit.git
+cp vibecoding-websecurity-audit/security-audit.sh your-project/
+cp -r vibecoding-websecurity-audit/.github your-project/
 ```
 
 ## Usage
@@ -87,7 +89,7 @@ permissions:
 
 jobs:
   security-audit:
-    name: Web Security Audit
+    name: Vibecoding Web Security Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

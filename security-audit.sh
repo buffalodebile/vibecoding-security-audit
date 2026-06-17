@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Web Security Audit Script
+# Vibecoding Web Security Audit Script
 # =============================================================================
-# Automated security checks for any web project (Next.js, React, Vue, Nuxt,
+# Automated security checks for any vibecoded web project (Next.js, React, Vue, Nuxt,
 # SvelteKit, Express, Fastify, Astro, Remix, Angular, and more).
 #
 # Based on Burak Eregar's 9 security principles for AI-assisted development.
@@ -85,7 +85,7 @@ elif [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
   PKG_MANAGER="bun"
 fi
 
-echo -e "${BLUE}Web Security Audit${NC}"
+echo -e "${BLUE}Vibecoding Web Security Audit${NC}"
 echo "Source directory: $SRC_DIR"
 echo "Framework: $FRAMEWORK | Package manager: $PKG_MANAGER"
 echo "Mode: $([ "$CI_MODE" = true ] && echo 'CI' || echo 'local')$([ "$FIX_MODE" = true ] && echo ' + auto-fix' || echo '')"
