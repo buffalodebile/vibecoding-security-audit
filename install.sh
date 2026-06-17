@@ -2,7 +2,7 @@
 # =============================================================================
 # Vibecoding Web Security Audit - Installer
 # =============================================================================
-# Usage: curl -fsSL https://raw.githubusercontent.com/buffalodebile/vibecoding-websecurity-audit/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/main/install.sh | bash
 # =============================================================================
 
 set -euo pipefail
@@ -14,12 +14,12 @@ NC='\033[0m'
 echo -e "${BLUE}Installing Vibecoding Web Security Audit...${NC}"
 
 # Download the script
-curl -fsSL -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-websecurity-audit/main/security-audit.sh
+curl -fsSL -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/main/security-audit.sh
 chmod +x security-audit.sh
 
 # Download the GitHub Action workflow
 mkdir -p .github/workflows
-curl -fsSL -o .github/workflows/security-audit.yml https://raw.githubusercontent.com/buffalodebile/vibecoding-websecurity-audit/main/.github/workflows/security-audit.yml
+curl -fsSL -o .github/workflows/security-audit.yml https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/main/.github/workflows/security-audit.yml
 
 echo -e "${GREEN}Done!${NC} Installed:"
 echo "  - security-audit.sh (run locally with ./security-audit.sh)"

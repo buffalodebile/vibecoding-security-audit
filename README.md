@@ -42,7 +42,7 @@ The script automatically detects:
 
 ```bash
 # Download the script into your project
-curl -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-websecurity-audit/main/security-audit.sh
+curl -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/main/security-audit.sh
 chmod +x security-audit.sh
 
 # Run it
@@ -52,9 +52,9 @@ chmod +x security-audit.sh
 ### Option 2: Clone and copy
 
 ```bash
-git clone https://github.com/buffalodebile/vibecoding-websecurity-audit.git
-cp vibecoding-websecurity-audit/security-audit.sh your-project/
-cp -r vibecoding-websecurity-audit/.github your-project/
+git clone https://github.com/buffalodebile/vibecoding-security-audit.git
+cp vibecoding-security-audit/security-audit.sh your-project/
+cp -r vibecoding-security-audit/.github your-project/
 ```
 
 ## Usage
@@ -92,19 +92,34 @@ jobs:
     name: Vibecoding Web Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - name: Detect Node project
+        id: node
+        run: |
+          if [ -f package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v5
+        if: steps.node.outputs.present == 'true'
         with:
-          node-version: "20"
-          cache: "npm"
-      - run: npm ci
+          node-version: "22"
+      - name: Install dependencies
+        if: steps.node.outputs.present == 'true'
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install
+          fi
       - name: Run security audit
         run: |
           chmod +x ./security-audit.sh
           ./security-audit.sh --ci
 ```
 
-That's it. Every push and every PR will now trigger the full security audit. If any **error-level** check fails, the workflow fails and blocks the merge.
+That's it. Every push and every PR will now trigger the full security audit. If any **error-level** check fails, the workflow fails and blocks the merge. The Node setup steps are skipped automatically when the repo has no `package.json` (so the audit still runs on plain/static projects).
 
 ### Using pnpm or yarn
 
