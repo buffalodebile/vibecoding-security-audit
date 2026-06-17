@@ -361,15 +361,26 @@ fi
 # =============================================================================
 header "ESLint Check"
 
-ESLINT_TARGET="$SRC_DIR"
-if [ "$FIX_MODE" = true ]; then
-  npx eslint "$ESLINT_TARGET" --fix 2>/dev/null || true
+# Only run ESLint when the project actually configures it, otherwise npx would
+# fetch ESLint and fail for lack of a config (false positive on non-JS repos).
+ESLINT_CONFIG=$(ls eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yml .eslintrc.yaml 2>/dev/null | head -1 || true)
+if [ -z "$ESLINT_CONFIG" ] && [ -f "package.json" ] && grep -q "\"eslintConfig\"" package.json 2>/dev/null; then
+  ESLINT_CONFIG="package.json"
 fi
-if npx eslint "$ESLINT_TARGET" 2>/dev/null; then
-  pass "No ESLint errors"
+
+if [ -z "$ESLINT_CONFIG" ]; then
+  pass "No ESLint config found, skipping (not configured for this project)"
 else
-  warn "ESLint reported issues"
-  echo "    Run 'npx eslint $ESLINT_TARGET' for details"
+  ESLINT_TARGET="$SRC_DIR"
+  if [ "$FIX_MODE" = true ]; then
+    npx eslint "$ESLINT_TARGET" --fix 2>/dev/null || true
+  fi
+  if npx eslint "$ESLINT_TARGET" 2>/dev/null; then
+    pass "No ESLint errors"
+  else
+    warn "ESLint reported issues"
+    echo "    Run 'npx eslint $ESLINT_TARGET' for details"
+  fi
 fi
 
 # =============================================================================
