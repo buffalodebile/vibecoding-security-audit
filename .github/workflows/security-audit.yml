@@ -16,16 +16,31 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Detect Node project
+        id: node
+        run: |
+          if [ -f package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        if: steps.node.outputs.present == 'true'
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: "22"
 
       - name: Install dependencies
-        run: npm ci
+        if: steps.node.outputs.present == 'true'
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Run security audit
         run: |
