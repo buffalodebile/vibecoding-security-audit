@@ -15,8 +15,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Actions are pinned to a full commit SHA (not a moving @v5 tag) so a
+      # compromised or retagged release can't silently change what runs here.
+      # The trailing comment is the human-readable version the SHA maps to.
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Detect Node project
         id: node
@@ -29,17 +32,22 @@ jobs:
 
       - name: Setup Node.js
         if: steps.node.outputs.present == 'true'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
 
       - name: Install dependencies
         if: steps.node.outputs.present == 'true'
+        # --ignore-scripts blocks dependency lifecycle (postinstall) scripts from
+        # executing during install: a defense against malicious packages running
+        # arbitrary code in CI. If your project genuinely needs a postinstall step
+        # (e.g. `prisma generate`), drop --ignore-scripts here or add that step
+        # explicitly after install.
         run: |
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
+            npm ci --ignore-scripts
           else
-            npm install
+            npm install --ignore-scripts
           fi
 
       - name: Run security audit

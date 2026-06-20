@@ -36,26 +36,69 @@ The script automatically detects:
 - **Package manager**: npm, pnpm, yarn, bun
 - **Client-side patterns**: `"use client"` (React), `.vue` (Vue), `.svelte` (Svelte)
 
-## Quick start
+## Install
 
-### Option 1: Copy the script (simplest)
+This tool runs static, **read-only** checks against your code. Read it before you
+run it, and never pipe a remote script straight into your shell.
 
-```bash
-# Download the script into your project
-curl -o security-audit.sh https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/main/security-audit.sh
-chmod +x security-audit.sh
-
-# Run it
-./security-audit.sh
-```
-
-### Option 2: Clone and copy
+### Option 1 — Clone, inspect, then install (recommended)
 
 ```bash
 git clone https://github.com/buffalodebile/vibecoding-security-audit.git
-cp vibecoding-security-audit/security-audit.sh your-project/
-cp -r vibecoding-security-audit/.github your-project/
+cd vibecoding-security-audit
+less security-audit.sh        # ~500 lines of plain bash, no magic — read it
+
+# Copy the script + GitHub Action into your project (offline, no network):
+./install.sh /path/to/your/project       # omit the path to use the current dir
 ```
+
+### Option 2 — Use it as a Claude / AI-assistant skill
+
+Drop this repo into your assistant's skills folder (for Claude Code:
+`~/.claude/skills/web-security-audit`). The assistant then runs the 15 checks
+**read-only, with judgment** — adapting to your stack and ignoring false positives
+(like public-by-design keys) automatically. This is the most reliable path on an
+unfamiliar codebase, and it executes no scripts at all.
+
+### Option 3 — Grab the single script
+
+```bash
+# Download to a file (NOT piped to a shell), read it, then run it:
+curl -o security-audit.sh \
+  https://raw.githubusercontent.com/buffalodebile/vibecoding-security-audit/master/security-audit.sh
+less security-audit.sh
+chmod +x security-audit.sh
+./security-audit.sh
+```
+
+## Trust & safety
+
+- **Read-only by default.** The script and the skill never edit your files,
+  install packages, or change dependencies. The only exception is the opt-in
+  `--fix` flag, which applies *reversible* fixes (`eslint --fix`, a **non-forced**
+  `npm audit fix`) — review the `git diff` afterward.
+- **No remote code execution.** Install is offline (clone, read, copy). The script
+  never auto-downloads tools: `tsc`/`eslint` run only if already installed in your
+  project. `npm audit` runs no project code.
+- **Pin what you trust.** GitHub Actions are pinned to commit SHAs, and you can
+  pin your copy of the script to a specific commit so it can't change under you.
+
+## About false positives
+
+A grep-based scanner sees the word `KEY` and panics. Real security needs context,
+so the skill (and this script, where it can) **ignores keys that are public by
+design**:
+
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — public; protected by Row Level Security.
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` / `pk_live_…` / `pk_test_…` — publishable
+  keys are meant to be in the browser. Only the **secret** key (`sk_…`) is a leak.
+- Firebase web config, Clerk publishable key, PostHog / Sentry DSN / analytics
+  tokens, Mapbox & Maps browser keys, captcha **site** keys — all client-side by
+  design.
+- Empty or placeholder values in `.env.example` / `.env.sample` templates are not
+  secrets.
+
+If a check fires on one of these, it's expected — not a hole in your app.
 
 ## Usage
 
@@ -66,7 +109,8 @@ cp -r vibecoding-security-audit/.github your-project/
 # CI mode (exits with code 1 on any error)
 ./security-audit.sh --ci
 
-# Auto-fix mode (runs audit fix + eslint --fix)
+# Auto-fix mode: applies only safe, reversible fixes (eslint --fix and a
+# NON-forced npm audit fix). Review the git diff afterward.
 ./security-audit.sh --fix
 ```
 
@@ -92,7 +136,9 @@ jobs:
     name: Vibecoding Web Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # Pinned to a commit SHA (not a moving @v5 tag) so a retagged or
+      # compromised release can't change what runs. Comment = the version it maps to.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Detect Node project
         id: node
         run: |
@@ -101,17 +147,19 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.node.outputs.present == 'true'
         with:
           node-version: "22"
       - name: Install dependencies
         if: steps.node.outputs.present == 'true'
+        # --ignore-scripts blocks dependency postinstall scripts from running
+        # arbitrary code in CI. Drop it if your project needs postinstall codegen.
         run: |
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
+            npm ci --ignore-scripts
           else
-            npm install
+            npm install --ignore-scripts
           fi
       - name: Run security audit
         run: |
@@ -128,10 +176,10 @@ That's it. Every push and every PR will now trigger the full security audit. If 
       - uses: pnpm/action-setup@v4
         with:
           version: 9
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       # yarn
-      - run: yarn install --frozen-lockfile
+      - run: yarn install --frozen-lockfile --ignore-scripts
 ```
 
 ### Customizing the trigger

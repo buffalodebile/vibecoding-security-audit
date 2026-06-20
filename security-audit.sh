@@ -7,9 +7,15 @@
 #
 # Based on Burak Eregar's 9 security principles for AI-assisted development.
 #
+# This script is READ-ONLY except for --fix. It never installs packages, never
+# fetches code over the network, and never runs destructive dependency changes.
+# Its output is a list of CANDIDATES to confirm, not final findings: some matches
+# are expected false positives (e.g. public-by-design keys). Review each one.
+#
 # Usage: ./security-audit.sh [--ci] [--fix]
 #   --ci   Exit with non-zero code on any failure (for CI/CD)
-#   --fix  Auto-fix issues where possible (npm audit fix, eslint --fix)
+#   --fix  Apply safe, reversible fixes (eslint --fix, non-forced npm audit fix).
+#          Modifies files in place: review the git diff afterward. Opt-in only.
 # =============================================================================
 
 set -euo pipefail
@@ -44,6 +50,18 @@ header() { echo -e "\n${BLUE}=== $1 ===${NC}"; }
 pass()   { echo -e "  ${GREEN}PASS${NC} $1"; }
 fail()   { echo -e "  ${RED}FAIL${NC} $1"; ERRORS=$((ERRORS + 1)); }
 warn()   { echo -e "  ${YELLOW}WARN${NC} $1"; WARNINGS=$((WARNINGS + 1)); }
+
+# Run a project-local CLI without ever downloading it. `npx --no-install` resolves
+# only from the project's own node_modules and fails fast if absent, so this can
+# never fetch and execute a remote package (unlike a bare `npx <pkg>`).
+has_local_bin() {
+  [ -f "node_modules/.bin/$1" ] || [ -f "node_modules/.bin/$1.cmd" ] \
+    || npx --no-install "$1" --version >/dev/null 2>&1
+}
+run_local_bin() {
+  local bin="$1"; shift
+  npx --no-install "$bin" "$@"
+}
 
 # -----------------------------------------------------------------------------
 # Detect source directory (src/, app/, lib/, pages/, or current dir)
@@ -197,12 +215,32 @@ header "Principle 4: No secrets in client-exposed env variables"
 # - Create React App: REACT_APP_
 PUBLIC_ENV_PATTERN="(NEXT_PUBLIC_|VITE_|NUXT_PUBLIC_|REACT_APP_|EXPO_PUBLIC_).*(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE)"
 
-EXPOSED_SECRETS=$(grep -rnE "$PUBLIC_ENV_PATTERN" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.vue" --include="*.svelte" --include="*.env*" . 2>/dev/null | grep -vE "(node_modules|\.next|\.nuxt|\.svelte-kit|dist|build|\.output)" || true)
+# Keys that are PUBLIC BY DESIGN and belong in the browser: matching these is
+# expected and is NOT a leak (Supabase anon key + RLS, Stripe/Clerk publishable
+# keys, Firebase web config, analytics & map tokens, captcha site keys, ...).
+PUBLIC_BY_DESIGN="(SUPABASE_ANON|ANON_KEY|STRIPE_PUBLISHABLE|PUBLISHABLE_KEY|CLERK_PUBLISHABLE|FIREBASE|POSTHOG|SENTRY_DSN|MAPBOX|MAPS_API|GA_MEASUREMENT|GTM_|GOOGLE_ANALYTICS|ALGOLIA_SEARCH|AMPLITUDE|MIXPANEL|TURNSTILE_SITE|RECAPTCHA_SITE|HCAPTCHA_SITE|VAPID_PUBLIC)"
+
+# Obvious placeholder values found in templates are not real secrets.
+PLACEHOLDER_VALUE="(your[-_]|xxxxx|changeme|placeholder|dummy|example\.com|sk_test_xxx|<[a-z_]+>|\.\.\.)"
+
+# Only a REAL, non-empty value assigned to a client-exposed *secret-named*
+# variable is a finding. We therefore drop: build output, template files
+# (.env.example/.sample/.template), public-by-design keys, empty assignments
+# (e.g. `NEXT_PUBLIC_SUPABASE_ANON_KEY=`), and placeholder values.
+EXPOSED_SECRETS=$(grep -rnE "$PUBLIC_ENV_PATTERN" \
+    --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
+    --include="*.vue" --include="*.svelte" --include="*.env*" . 2>/dev/null \
+  | grep -vE 'node_modules|\.next|\.nuxt|\.svelte-kit|dist|build|\.output' \
+  | grep -vE '\.env\.(example|sample|template|dist)' \
+  | grep -viE "$PUBLIC_BY_DESIGN" \
+  | grep -vE '(=|:)[[:space:]]*("")?[[:space:]]*$' \
+  | grep -viE "$PLACEHOLDER_VALUE" \
+  || true)
 
 if [ -z "$EXPOSED_SECRETS" ]; then
-  pass "No secrets detected in client-exposed env variables"
+  pass "No real secrets detected in client-exposed env variables"
 else
-  fail "Potential secrets exposed via public env variables:"
+  fail "Potential secrets exposed via public env variables (confirm each; public-by-design keys are already excluded):"
   echo "$EXPOSED_SECRETS" | head -20 | while read -r line; do
     echo "    $line"
   done
@@ -315,7 +353,14 @@ fi
 header "Dependency Audit"
 
 if [ "$FIX_MODE" = true ]; then
-  $PKG_MANAGER audit fix --force 2>/dev/null || npm audit fix --force 2>/dev/null || true
+  # Non-forced only. `--force` can push breaking major versions into your
+  # dependency tree, so it is intentionally never used. Review the git diff after.
+  echo "    --fix: applying non-forced dependency fixes (review the git diff afterward)"
+  case "$PKG_MANAGER" in
+    npm)  npm audit fix 2>/dev/null || true ;;
+    pnpm) pnpm audit --fix 2>/dev/null || true ;;
+    *)    echo "    (auto audit-fix skipped for $PKG_MANAGER; run '$PKG_MANAGER audit' and update manually)" ;;
+  esac
 fi
 
 if [ "$PKG_MANAGER" = "pnpm" ]; then
@@ -346,11 +391,13 @@ fi
 header "TypeScript Type Check"
 
 if [ -f "tsconfig.json" ]; then
-  if npx tsc --noEmit 2>/dev/null; then
+  if ! has_local_bin tsc; then
+    warn "tsconfig.json present but TypeScript is not installed locally; skipping typecheck (run install first). Not a failure."
+  elif run_local_bin tsc --noEmit 2>/dev/null; then
     pass "TypeScript compilation successful"
   else
     fail "TypeScript compilation errors found"
-    echo "    Run 'npx tsc --noEmit' for details"
+    echo "    Run 'npx --no-install tsc --noEmit' for details"
   fi
 else
   pass "No tsconfig.json found, skipping (not a TypeScript project)"
@@ -362,14 +409,18 @@ fi
 header "ESLint Check"
 
 ESLINT_TARGET="$SRC_DIR"
-if [ "$FIX_MODE" = true ]; then
-  npx eslint "$ESLINT_TARGET" --fix 2>/dev/null || true
-fi
-if npx eslint "$ESLINT_TARGET" 2>/dev/null; then
-  pass "No ESLint errors"
+if ! has_local_bin eslint; then
+  warn "ESLint is not installed locally; skipping lint. Not a failure."
 else
-  warn "ESLint reported issues"
-  echo "    Run 'npx eslint $ESLINT_TARGET' for details"
+  if [ "$FIX_MODE" = true ]; then
+    run_local_bin eslint "$ESLINT_TARGET" --fix 2>/dev/null || true
+  fi
+  if run_local_bin eslint "$ESLINT_TARGET" 2>/dev/null; then
+    pass "No ESLint errors"
+  else
+    warn "ESLint reported issues"
+    echo "    Run 'npx --no-install eslint $ESLINT_TARGET' for details"
+  fi
 fi
 
 # =============================================================================
@@ -377,11 +428,12 @@ fi
 # =============================================================================
 header "Secret Scanning"
 
+# NOTE: Stripe *publishable* keys (pk_live_/pk_test_) are public by design and are
+# deliberately NOT listed here. Only the *secret* keys (sk_*) are real leaks.
 SECRET_PATTERNS=(
-  'sk-[a-zA-Z0-9]{20,}'           # OpenAI keys
-  'sk_live_[a-zA-Z0-9]{20,}'      # Stripe live keys
-  'sk_test_[a-zA-Z0-9]{20,}'      # Stripe test keys
-  'pk_live_[a-zA-Z0-9]{20,}'      # Stripe publishable live keys
+  'sk-[a-zA-Z0-9]{20,}'           # OpenAI / Anthropic secret keys
+  'sk_live_[a-zA-Z0-9]{20,}'      # Stripe SECRET live keys
+  'sk_test_[a-zA-Z0-9]{20,}'      # Stripe SECRET test keys
   'ghp_[a-zA-Z0-9]{36}'           # GitHub PAT
   'github_pat_[a-zA-Z0-9_]{40,}'  # GitHub fine-grained PAT
   'gho_[a-zA-Z0-9]{36}'           # GitHub OAuth token
@@ -404,7 +456,13 @@ SECRETS_FOUND=false
 SCAN_DIR="$SRC_DIR"
 
 for pattern in "${SECRET_PATTERNS[@]}"; do
-  MATCHES=$(grep -rnE "$pattern" $FILE_EXTS --include="*.env" --include="*.json" --include="*.yaml" --include="*.yml" "$SCAN_DIR" 2>/dev/null | grep -vE "(node_modules|\.next|\.nuxt|dist|build|\.output|\.svelte-kit|\.lock|package-lock)" || true)
+  # Exclude build output, lockfiles, template env files (.env.example/.sample/...),
+  # and obvious placeholder values so templates don't trip the scanner.
+  MATCHES=$(grep -rnE "$pattern" $FILE_EXTS --include="*.env" --include="*.json" --include="*.yaml" --include="*.yml" "$SCAN_DIR" 2>/dev/null \
+    | grep -vE "(node_modules|\.next|\.nuxt|dist|build|\.output|\.svelte-kit|\.lock|package-lock)" \
+    | grep -vE '\.env\.(example|sample|template|dist)' \
+    | grep -viE '(your[-_]|xxxxx|changeme|placeholder|<[a-z_]+>|example_|_example|dummy)' \
+    || true)
   if [ -n "$MATCHES" ]; then
     SECRETS_FOUND=true
     fail "Potential hardcoded secret found:"
