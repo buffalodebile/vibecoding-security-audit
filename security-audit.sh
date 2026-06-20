@@ -476,12 +476,20 @@ if [ "$SECRETS_FOUND" = false ]; then
   pass "No hardcoded secrets detected"
 fi
 
-# Check .env files are gitignored
+# Check .env files are gitignored. This is only a real error if actual .env files
+# exist; on a repo with none (e.g. a tooling repo), it's a recommendation, not a
+# finding. A line is "ignored" if it mentions .env and isn't a pure negation (!).
 if [ -f ".gitignore" ]; then
-  if grep -qE "^\.env" .gitignore 2>/dev/null; then
+  if grep -E '\.env' .gitignore 2>/dev/null | grep -qv '^!'; then
     pass ".env files are in .gitignore"
   else
-    fail ".env files are NOT in .gitignore"
+    REAL_ENV=$(find . -maxdepth 4 \( -name ".env" -o -name ".env.*" \) 2>/dev/null \
+      | grep -vE '(node_modules|\.git/|\.env\.(example|sample|template|dist))' | head -1 || true)
+    if [ -n "$REAL_ENV" ]; then
+      fail ".env files exist but .env is NOT in .gitignore (risk of committing secrets)"
+    else
+      warn "Consider adding '.env' and '.env.*' (keep '!.env.example') to .gitignore before you create one"
+    fi
   fi
 fi
 
